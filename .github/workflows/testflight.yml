@@ -138,104 +138,42 @@ jobs:
       - name: Add iOS platform
         run: ionic cordova platform add ios
 
-      - name: Cordova prepare iOS
-        run: ionic cordova prepare ios --prod
-
-      - name: Disable CocoaPods code signing
+      - name: Write build.json for signing
         run: |
-          # Pods (Firebase, Google, v.v.) là library, không cần provisioning profile
-          # Append post_install hook vào Podfile rồi chạy pod install lại
-          cat >> platforms/ios/Podfile << 'PODEOF'
-
-          post_install do |installer|
-            installer.pods_project.targets.each do |target|
-              target.build_configurations.each do |config|
-                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                config.build_settings['CODE_SIGN_IDENTITY'] = ''
-              end
-            end
-          end
-          PODEOF
-
-          cd platforms/ios && pod install
-
-      - name: Archive with xcodebuild
-        run: |
-          set -o pipefail
-
-          WORKSPACE=$(find platforms/ios -maxdepth 1 -name "*.xcworkspace" | head -1)
-          PROJECT=$(find platforms/ios -maxdepth 1 -name "*.xcodeproj" | head -1)
-
-          XCODE_SIGN_ARGS=(
-            DEVELOPMENT_TEAM="${{ env.TEAM_ID }}"
-            CODE_SIGN_STYLE=Manual
-            CODE_SIGN_IDENTITY="iPhone Distribution"
-            PROVISIONING_PROFILE="$PROFILE_UUID"
-            PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}"
-          )
-
-          if [ -n "$WORKSPACE" ]; then
-            SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-            echo "Using workspace: $WORKSPACE (scheme: $SCHEME)"
-            xcodebuild archive \
-              -workspace "$WORKSPACE" \
-              -scheme "$SCHEME" \
-              -sdk iphoneos \
-              -destination "generic/platform=iOS" \
-              -configuration Release \
-              -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
-              "${XCODE_SIGN_ARGS[@]}"
-          elif [ -n "$PROJECT" ]; then
-            SCHEME=$(basename "$PROJECT" .xcodeproj)
-            echo "Using project: $PROJECT (scheme: $SCHEME)"
-            xcodebuild archive \
-              -project "$PROJECT" \
-              -scheme "$SCHEME" \
-              -sdk iphoneos \
-              -destination "generic/platform=iOS" \
-              -configuration Release \
-              -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
-              "${XCODE_SIGN_ARGS[@]}"
-          else
-            echo "ERROR: No Xcode workspace or project found"
-            exit 1
-          fi
-
-          echo "=== Archive created ==="
-          ls -la "$RUNNER_TEMP/"
-
-      - name: Export IPA
-        run: |
-          set -o pipefail
-
-          cat > /tmp/ExportOptions.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>app-store</string>
-            <key>teamID</key>
-            <string>${{ env.TEAM_ID }}</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${{ env.BUNDLE_ID }}</key>
-              <string>${PROFILE_UUID}</string>
-            </dict>
-          </dict>
-          </plist>
+          cat > build.json << EOF
+          {
+            "ios": {
+              "release": {
+                "codeSignIdentity": "iPhone Distribution",
+                "developmentTeam": "${{ env.TEAM_ID }}",
+                "packageType": "app-store",
+                "provisioningProfile": "${PROFILE_UUID}",
+                "automaticProvisioning": false
+              }
+            }
+          }
           EOF
+          echo "=== build.json written ==="
+          cat build.json
 
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
-            -exportPath "$RUNNER_TEMP/ipa" \
-            -exportOptionsPlist /tmp/ExportOptions.plist
+      - name: Build iOS release
+        run: |
+          # cordova build tự handle: prepare + xcodebuild archive + export IPA
+          # build.json sets signing only for App target (không áp dụng cho Pods/SPM)
+          cordova build ios --release --device --buildConfig=build.json
 
-          echo "=== IPA files ==="
-          find "$RUNNER_TEMP/ipa" -name "*.ipa" 2>/dev/null
+      - name: Find IPA
+        run: |
+          echo "=== IPA search ==="
+          find platforms/ios/build -name "*.ipa" 2>/dev/null
+          find "$RUNNER_TEMP" -name "*.ipa" 2>/dev/null
+          # Lưu đường dẫn IPA vào env
+          IPA=$(find platforms/ios/build -name "*.ipa" 2>/dev/null | head -1)
+          if [ -z "$IPA" ]; then
+            IPA=$(find "$RUNNER_TEMP" -name "*.ipa" 2>/dev/null | head -1)
+          fi
+          echo "IPA_FILE=$IPA" >> $GITHUB_ENV
+          echo "Found IPA: $IPA"
 
       - name: Upload to TestFlight
         env:
@@ -247,7 +185,6 @@ jobs:
           echo "$ASC_API_KEY" | base64 -d \
             > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
 
-          IPA_FILE=$(find "$RUNNER_TEMP/ipa" -name "*.ipa" | head -1)
           echo "Uploading: $IPA_FILE"
           xcrun altool --upload-app \
             --type ios \
