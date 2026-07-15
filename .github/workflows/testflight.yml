@@ -1,0 +1,205 @@
+name: iOS TestFlight
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+env:
+  NODE_VERSION: '20'
+  BUNDLE_ID: 'vn.vbs.moodleapp'
+  TEAM_ID: '3AS56742DJ'
+  APP_NAME: 'Moodle'   # phải khớp với <name> trong config.xml
+
+jobs:
+  # ── Job 1: Build web (chạy trên mọi push lên main và tag) ──────────────────
+  build-web:
+    name: Build web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write moodle.config.json
+        run: |
+          cat > moodle.config.json << 'EOF'
+          {
+            "default_lang": "vi",
+            "defaultsites": [
+              {
+                "url": "${{ secrets.MOODLE_SITE_URL }}",
+                "name": "VBS LMS"
+              }
+            ],
+            "forcedefault": false
+          }
+          EOF
+
+      - name: Build production web
+        run: npm run build:prod
+
+      - name: Upload web build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: www/
+          retention-days: 1
+
+  # ── Job 2: Build iOS + upload TestFlight (chỉ chạy khi có tag v*.*.*) ───────
+  build-ios:
+    name: Build iOS & upload TestFlight
+    runs-on: macos-latest
+    needs: build-web
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install CLI tools
+        run: npm install -g @ionic/cli cordova
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write moodle.config.json
+        run: |
+          cat > moodle.config.json << 'EOF'
+          {
+            "default_lang": "vi",
+            "defaultsites": [
+              {
+                "url": "${{ secrets.MOODLE_SITE_URL }}",
+                "name": "VBS LMS"
+              }
+            ],
+            "forcedefault": false
+          }
+          EOF
+
+      - name: Update Bundle ID in config.xml
+        run: |
+          sed -i '' \
+            's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' \
+            config.xml
+          grep 'widget.*id=' config.xml | head -1
+
+      - name: Setup iOS signing
+        env:
+          IOS_DISTRIBUTION_CERT_P12: ${{ secrets.IOS_DISTRIBUTION_CERT_P12 }}
+          IOS_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERT_PASSWORD }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          # Tạo keychain tạm
+          KEYCHAIN_PASS=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASS" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASS" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          # Import certificate
+          echo "$IOS_DISTRIBUTION_CERT_P12" | base64 -d > /tmp/dist.p12
+          security import /tmp/dist.p12 -k build.keychain \
+            -P "$IOS_DISTRIBUTION_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/xcodebuild
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASS" build.keychain
+
+          # Install provisioning profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$IOS_PROVISIONING_PROFILE" | base64 -d \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/vbs_moodleapp.mobileprovision
+
+      - name: Build production web
+        run: npm run build:prod
+
+      - name: Add iOS platform
+        run: ionic cordova platform add ios
+
+      - name: Cordova build iOS release
+        run: |
+          ionic cordova build ios --prod --release \
+            -- \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app"
+
+      - name: Archive with xcodebuild
+        run: |
+          WORKSPACE="platforms/ios/${{ env.APP_NAME }}.xcworkspace"
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "${{ env.APP_NAME }}" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
+            PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}" \
+            | xcpretty
+
+      - name: Export IPA
+        run: |
+          cat > /tmp/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>${{ env.TEAM_ID }}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ env.BUNDLE_ID }}</key>
+              <string>vbs_mobile_app</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -exportOptionsPlist /tmp/ExportOptions.plist \
+            | xcpretty
+
+      - name: Upload to TestFlight
+        env:
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_API_KEY" | base64 -d \
+            > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$RUNNER_TEMP/ipa/${{ env.APP_NAME }}.ipa" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            --verbose
+
+      - name: Cleanup secrets
+        if: always()
+        run: |
+          security delete-keychain build.keychain || true
+          rm -f /tmp/dist.p12 \
+                ~/.appstoreconnect/private_keys/AuthKey_*.p8
