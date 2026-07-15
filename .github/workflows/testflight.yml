@@ -6,7 +6,7 @@ on:
     tags: ['v*.*.*']
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'
   BUNDLE_ID: 'vn.vbs.moodleapp'
   TEAM_ID: '3AS56742DJ'
   APP_NAME: 'Moodle'   # phải khớp với <name> trong config.xml
