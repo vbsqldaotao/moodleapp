@@ -124,16 +124,13 @@ jobs:
           PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/vbs_moodleapp.mobileprovision"
           echo "$IOS_PROVISIONING_PROFILE" | base64 -d > "$PROFILE_PATH"
 
-          # Extract UUID từ profile để dùng trong xcodebuild
-          PROFILE_UUID=$(security cms -D -i "$PROFILE_PATH" 2>/dev/null \
-            | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin 2>/dev/null)
+          # Extract UUID từ profile (dùng temp file vì PlistBuddy không đọc stdin qua pipe)
+          security cms -D -i "$PROFILE_PATH" > /tmp/profile.plist
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' /tmp/profile.plist)
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print Name' /tmp/profile.plist)
           echo "Profile UUID: $PROFILE_UUID"
-          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
-
-          # Extract profile name để debug
-          PROFILE_NAME=$(security cms -D -i "$PROFILE_PATH" 2>/dev/null \
-            | /usr/libexec/PlistBuddy -c 'Print Name' /dev/stdin 2>/dev/null)
           echo "Profile Name: $PROFILE_NAME"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
 
       - name: Build production web
         run: npm run build:prod
