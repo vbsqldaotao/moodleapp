@@ -30,18 +30,17 @@ jobs:
 
       - name: Write moodle.config.json
         run: |
-          cat > moodle.config.json << 'EOF'
-          {
-            "default_lang": "vi",
-            "defaultsites": [
-              {
-                "url": "${{ secrets.MOODLE_SITE_URL }}",
-                "name": "VBS LMS"
-              }
-            ],
-            "forcedefault": false
-          }
-          EOF
+          python3 -c "
+import json, sys
+config = {
+    'defaultsites': [{'url': '${{ secrets.MOODLE_SITE_URL }}', 'name': 'VBS LMS'}],
+    'forcedefault': False
+}
+with open('moodle.config.json', 'w') as f:
+    json.dump(config, f, indent=2)
+print('moodle.config.json written')
+"
+          cat moodle.config.json
 
       - name: Build production web
         run: npm run build:prod
@@ -81,18 +80,17 @@ jobs:
 
       - name: Write moodle.config.json
         run: |
-          cat > moodle.config.json << 'EOF'
-          {
-            "default_lang": "vi",
-            "defaultsites": [
-              {
-                "url": "${{ secrets.MOODLE_SITE_URL }}",
-                "name": "VBS LMS"
-              }
-            ],
-            "forcedefault": false
-          }
-          EOF
+          python3 -c "
+import json, sys
+config = {
+    'defaultsites': [{'url': '${{ secrets.MOODLE_SITE_URL }}', 'name': 'VBS LMS'}],
+    'forcedefault': False
+}
+with open('moodle.config.json', 'w') as f:
+    json.dump(config, f, indent=2)
+print('moodle.config.json written')
+"
+          cat moodle.config.json
 
       - name: Update Bundle ID in config.xml
         run: |
