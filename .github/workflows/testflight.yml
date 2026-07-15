@@ -121,8 +121,19 @@ jobs:
 
           # Install provisioning profile
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$IOS_PROVISIONING_PROFILE" | base64 -d \
-            > ~/Library/MobileDevice/Provisioning\ Profiles/vbs_moodleapp.mobileprovision
+          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/vbs_moodleapp.mobileprovision"
+          echo "$IOS_PROVISIONING_PROFILE" | base64 -d > "$PROFILE_PATH"
+
+          # Extract UUID từ profile để dùng trong xcodebuild
+          PROFILE_UUID=$(security cms -D -i "$PROFILE_PATH" 2>/dev/null \
+            | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin 2>/dev/null)
+          echo "Profile UUID: $PROFILE_UUID"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+
+          # Extract profile name để debug
+          PROFILE_NAME=$(security cms -D -i "$PROFILE_PATH" 2>/dev/null \
+            | /usr/libexec/PlistBuddy -c 'Print Name' /dev/stdin 2>/dev/null)
+          echo "Profile Name: $PROFILE_NAME"
 
       - name: Build production web
         run: npm run build:prod
@@ -161,7 +172,7 @@ jobs:
               DEVELOPMENT_TEAM="${{ env.TEAM_ID }}" \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="iPhone Distribution" \
-              PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
+              PROVISIONING_PROFILE="$PROFILE_UUID" \
               PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}"
           elif [ -n "$PROJECT" ]; then
             SCHEME=$(basename "$PROJECT" .xcodeproj)
@@ -174,7 +185,7 @@ jobs:
               DEVELOPMENT_TEAM="${{ env.TEAM_ID }}" \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="iPhone Distribution" \
-              PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
+              PROVISIONING_PROFILE="$PROFILE_UUID" \
               PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}"
           else
             echo "ERROR: No Xcode workspace or project found"
@@ -202,7 +213,7 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>${{ env.BUNDLE_ID }}</key>
-              <string>vbs_mobile_app</string>
+              <string>${PROFILE_UUID}</string>
             </dict>
           </dict>
           </plist>
