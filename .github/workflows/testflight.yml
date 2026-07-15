@@ -130,39 +130,62 @@ jobs:
       - name: Add iOS platform
         run: ionic cordova platform add ios
 
-      - name: Cordova build iOS release
+      - name: Cordova prepare iOS
+        run: ionic cordova prepare ios --prod
+
+      - name: Debug iOS platform structure
         run: |
-          cat > build.json << 'EOF'
-          {
-            "ios": {
-              "release": {
-                "codeSignIdentity": "iPhone Distribution",
-                "developmentTeam": "${{ env.TEAM_ID }}",
-                "packageType": "app-store",
-                "provisioningProfile": "vbs_mobile_app",
-                "automaticProvisioning": false
-              }
-            }
-          }
-          EOF
-          ionic cordova build ios --prod --release --buildConfig=build.json
+          echo "=== platforms/ios contents ==="
+          ls -la platforms/ios/ || echo "No platforms/ios"
+          echo "=== xcworkspace files ==="
+          find platforms/ios -name "*.xcworkspace" -maxdepth 2 2>/dev/null || echo "none"
+          echo "=== xcodeproj files ==="
+          find platforms/ios -name "*.xcodeproj" -maxdepth 2 2>/dev/null || echo "none"
 
       - name: Archive with xcodebuild
         run: |
-          WORKSPACE="platforms/ios/${{ env.APP_NAME }}.xcworkspace"
-          xcodebuild archive \
-            -workspace "$WORKSPACE" \
-            -scheme "${{ env.APP_NAME }}" \
-            -configuration Release \
-            -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iPhone Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
-            PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}" \
-            | xcpretty
+          set -o pipefail
+
+          # Tìm workspace hoặc project
+          WORKSPACE=$(find platforms/ios -name "*.xcworkspace" -maxdepth 2 | head -1)
+          PROJECT=$(find platforms/ios -name "*.xcodeproj" -maxdepth 2 | head -1)
+
+          if [ -n "$WORKSPACE" ]; then
+            SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+            echo "Using workspace: $WORKSPACE (scheme: $SCHEME)"
+            xcodebuild archive \
+              -workspace "$WORKSPACE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGN_IDENTITY="iPhone Distribution" \
+              PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
+              PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}"
+          elif [ -n "$PROJECT" ]; then
+            SCHEME=$(basename "$PROJECT" .xcodeproj)
+            echo "Using project: $PROJECT (scheme: $SCHEME)"
+            xcodebuild archive \
+              -project "$PROJECT" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGN_IDENTITY="iPhone Distribution" \
+              PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
+              PRODUCT_BUNDLE_IDENTIFIER="${{ env.BUNDLE_ID }}"
+          else
+            echo "ERROR: No Xcode workspace or project found"
+            exit 1
+          fi
+
+          echo "=== Archive created ==="
+          ls -la "$RUNNER_TEMP/"
 
       - name: Export IPA
         run: |
+          set -o pipefail
+
           cat > /tmp/ExportOptions.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -186,8 +209,10 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
             -exportPath "$RUNNER_TEMP/ipa" \
-            -exportOptionsPlist /tmp/ExportOptions.plist \
-            | xcpretty
+            -exportOptionsPlist /tmp/ExportOptions.plist
+
+          echo "=== IPA files ==="
+          find "$RUNNER_TEMP/ipa" -name "*.ipa" 2>/dev/null
 
       - name: Upload to TestFlight
         env:
@@ -199,9 +224,11 @@ jobs:
           echo "$ASC_API_KEY" | base64 -d \
             > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
 
+          IPA_FILE=$(find "$RUNNER_TEMP/ipa" -name "*.ipa" | head -1)
+          echo "Uploading: $IPA_FILE"
           xcrun altool --upload-app \
             --type ios \
-            --file "$RUNNER_TEMP/ipa/${{ env.APP_NAME }}.ipa" \
+            --file "$IPA_FILE" \
             --apiKey "$ASC_KEY_ID" \
             --apiIssuer "$ASC_ISSUER_ID" \
             --verbose
