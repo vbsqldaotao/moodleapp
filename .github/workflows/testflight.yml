@@ -30,16 +30,8 @@ jobs:
 
       - name: Write moodle.config.json
         run: |
-          python3 -c "
-import json, sys
-config = {
-    'defaultsites': [{'url': '${{ secrets.MOODLE_SITE_URL }}', 'name': 'VBS LMS'}],
-    'forcedefault': False
-}
-with open('moodle.config.json', 'w') as f:
-    json.dump(config, f, indent=2)
-print('moodle.config.json written')
-"
+          printf '{"defaultsites":[{"url":"%s","name":"VBS LMS"}],"forcedefault":false}' \
+            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.json
           cat moodle.config.json
 
       - name: Build production web
@@ -80,16 +72,8 @@ print('moodle.config.json written')
 
       - name: Write moodle.config.json
         run: |
-          python3 -c "
-import json, sys
-config = {
-    'defaultsites': [{'url': '${{ secrets.MOODLE_SITE_URL }}', 'name': 'VBS LMS'}],
-    'forcedefault': False
-}
-with open('moodle.config.json', 'w') as f:
-    json.dump(config, f, indent=2)
-print('moodle.config.json written')
-"
+          printf '{"defaultsites":[{"url":"%s","name":"VBS LMS"}],"forcedefault":false}' \
+            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.json
           cat moodle.config.json
 
       - name: Update Bundle ID in config.xml
