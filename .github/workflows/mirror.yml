@@ -1,8 +1,7 @@
 name: Mirror
 
 on:
-  push:
-    branches: [main, v*.x]
+  workflow_dispatch:
 
 jobs:
   mirror:
