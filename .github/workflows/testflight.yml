@@ -158,6 +158,7 @@ jobs:
               -scheme "$SCHEME" \
               -configuration Release \
               -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+              DEVELOPMENT_TEAM="${{ env.TEAM_ID }}" \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="iPhone Distribution" \
               PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
@@ -170,6 +171,7 @@ jobs:
               -scheme "$SCHEME" \
               -configuration Release \
               -archivePath "$RUNNER_TEMP/moodleapp.xcarchive" \
+              DEVELOPMENT_TEAM="${{ env.TEAM_ID }}" \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="iPhone Distribution" \
               PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app" \
