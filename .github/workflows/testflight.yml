@@ -146,9 +146,9 @@ jobs:
         run: |
           set -o pipefail
 
-          # Tìm workspace hoặc project
-          WORKSPACE=$(find platforms/ios -name "*.xcworkspace" -maxdepth 2 | head -1)
-          PROJECT=$(find platforms/ios -name "*.xcodeproj" -maxdepth 2 | head -1)
+          # Tìm workspace hoặc project (maxdepth 1 để tránh lấy workspace bên trong xcodeproj)
+          WORKSPACE=$(find platforms/ios -maxdepth 1 -name "*.xcworkspace" | head -1)
+          PROJECT=$(find platforms/ios -maxdepth 1 -name "*.xcodeproj" | head -1)
 
           if [ -n "$WORKSPACE" ]; then
             SCHEME=$(basename "$WORKSPACE" .xcworkspace)
