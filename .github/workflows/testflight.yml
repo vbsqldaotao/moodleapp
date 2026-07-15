@@ -81,7 +81,11 @@ jobs:
           sed -i '' \
             's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' \
             config.xml
-          grep 'widget.*id=' config.xml | head -1
+          # Thêm build number = GitHub run_number (tự tăng mỗi run, đảm bảo unique cho TestFlight)
+          sed -i '' \
+            "s|</widget>|<preference name=\"ios-CFBundleVersion\" value=\"${{ github.run_number }}\" /></widget>|" \
+            config.xml
+          grep 'widget.*id=\|CFBundleVersion' config.xml | head -3
 
       - name: Setup iOS signing
         env:
