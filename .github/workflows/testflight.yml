@@ -132,11 +132,20 @@ jobs:
 
       - name: Cordova build iOS release
         run: |
-          ionic cordova build ios --prod --release \
-            -- \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iPhone Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="vbs_mobile_app"
+          cat > build.json << 'EOF'
+          {
+            "ios": {
+              "release": {
+                "codeSignIdentity": "iPhone Distribution",
+                "developmentTeam": "${{ env.TEAM_ID }}",
+                "packageType": "app-store",
+                "provisioningProfile": "vbs_mobile_app",
+                "automaticProvisioning": false
+              }
+            }
+          }
+          EOF
+          ionic cordova build ios --prod --release --buildConfig=build.json
 
       - name: Archive with xcodebuild
         run: |
