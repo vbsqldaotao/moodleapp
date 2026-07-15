@@ -81,11 +81,7 @@ jobs:
           sed -i '' \
             's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' \
             config.xml
-          # Thêm build number = GitHub run_number (tự tăng mỗi run, đảm bảo unique cho TestFlight)
-          sed -i '' \
-            "s|</widget>|<preference name=\"ios-CFBundleVersion\" value=\"${{ github.run_number }}\" /></widget>|" \
-            config.xml
-          grep 'widget.*id=\|CFBundleVersion' config.xml | head -3
+          grep 'widget.*id=' config.xml | head -1
 
       - name: Setup iOS signing
         env:
@@ -147,11 +143,23 @@ jobs:
           echo "=== build.json written ==="
           cat build.json
 
+      - name: Cordova prepare iOS
+        run: cordova prepare ios
+
+      - name: Set iOS build number
+        run: |
+          # Đặt CFBundleVersion trực tiếp vào Info.plist sau khi cordova prepare chạy xong
+          # (Cordova ignore ios-CFBundleVersion preference từ config.xml)
+          PLIST=$(find platforms/ios -name "*-Info.plist" | grep -v "test\|Test\|Pods\|frameworks" | head -1)
+          echo "Updating: $PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST"
+
       - name: Build iOS release
         run: |
-          # cordova build tự handle: prepare + xcodebuild archive + export IPA
-          # build.json sets signing only for App target (không áp dụng cho Pods/SPM)
-          cordova build ios --release --device --buildConfig=build.json
+          # cordova compile = chỉ archive + export IPA (không chạy prepare lại)
+          cordova compile ios --release --device --buildConfig=build.json
 
       - name: Find IPA
         run: |
