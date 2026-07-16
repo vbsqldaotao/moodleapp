@@ -1,11 +1,18 @@
 name: iOS Simulator Debug (VBS-499)
 
-# Workflow debug: build app rồi CHẠY THẬT trên iOS Simulator ngay trên runner,
-# vẽ mọi JS error lên màn hình và chụp screenshot → nhìn thấy nguyên nhân màn hình trắng.
+# Workflow debug: build app rồi CHẠY THẬT trên iOS Simulator ngay trên runner.
+# Webview gửi trạng thái DOM về runner qua beacon (screenshot không đáng tin).
 # KHÔNG ký, KHÔNG upload TestFlight. Chỉ chạy thủ công. Xoá sau khi fix xong VBS-499.
 
 on:
   workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'ionic-cordova (đúng, có inject cordova.js) hoặc plain (như testflight.yml hiện tại)'
+        required: true
+        default: 'ionic-cordova'
+        type: choice
+        options: [ionic-cordova, plain]
 
 env:
   NODE_VERSION: '24'
@@ -40,14 +47,10 @@ jobs:
         run: |
           printf '{"sites":[{"url":"%s","name":"VBS LMS"}],"default_lang":"vi"}' \
             '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.prod.json
-          cat moodle.config.prod.json
 
-      - name: Update Bundle ID in config.xml
+      - name: Update Bundle ID + ATS (ATS chỉ để beacon debug)
         run: |
           sed -i '' 's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' config.xml
-
-      - name: Cho phép cleartext HTTP (chỉ để beacon debug về runner)
-        run: |
           python3 - << 'PYEOF'
           p='config.xml'; s=open(p,encoding='utf-8').read()
           ats='    <platform name="ios">\n        <edit-config file="*-Info.plist" mode="merge" target="NSAppTransportSecurity">\n            <dict><key>NSAllowsArbitraryLoads</key><true/></dict>\n        </edit-config>'
@@ -57,29 +60,50 @@ jobs:
           print('ATS exception added (debug only)')
           PYEOF
 
-      - name: Build production web
-        run: npm run build:prod
+      - name: Add iOS platform
+        run: ionic cordova platform add ios --no-interactive
 
-      - name: Verify env.json (config phải đủ key)
+      # ─── Đây là điểm mấu chốt của VBS-499 ────────────────────────────────
+      # plain          = ionic build  -> target app:build (custom-webpack:browser)
+      #                  KHÔNG inject cordova.js  -> deviceready không bao giờ bắn
+      # ionic-cordova  = ionic cordova build -> target ionic-cordova-build
+      #                  (@ionic/cordova-builders:cordova-build) -> CÓ inject cordova.js
+      - name: Build iOS cho simulator (mode = ${{ inputs.build_mode }})
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
+          if [ "${{ inputs.build_mode }}" = "plain" ]; then
+            echo ">>> MODE PLAIN (tái hiện bug: giống testflight.yml hiện tại)"
+            ionic build --prod
+            cordova build ios --emulator -- --buildFlag='CODE_SIGNING_ALLOWED=NO' --buildFlag='CODE_SIGNING_REQUIRED=NO'
+          else
+            echo ">>> MODE IONIC-CORDOVA (fix đề xuất)"
+            ionic cordova build ios --prod --emulator --no-interactive -- --buildFlag='CODE_SIGNING_ALLOWED=NO' --buildFlag='CODE_SIGNING_REQUIRED=NO'
+          fi
+
+      - name: Kiểm chứng cordova.js + env.json
+        run: |
+          echo "=== config keys ==="
           node -e "
           const c = require('./src/assets/env.json').config;
-          console.log('config key count:', Object.keys(c).length);
-          console.log('sites        :', JSON.stringify(c.sites));
-          console.log('default_lang :', JSON.stringify(c.default_lang));
-          console.log('languages ok :', c.languages && c.languages.vi !== undefined);
-          if (Object.keys(c).length < 30) { console.error('CONFIG BỊ THIẾU KEY!'); process.exit(1); }
+          console.log('config key count:', Object.keys(c).length, '| sites:', JSON.stringify(c.sites));
+          if (Object.keys(c).length < 30) { console.error('CONFIG THIẾU KEY!'); process.exit(1); }
           "
+          APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
+          echo "APP = $APP"
+          echo "=== cordova.js CÓ trong index.html của bundle? (0 = không -> deviceready không bắn) ==="
+          grep -c "cordova.js" "$APP/www/index.html" || echo "0 — KHÔNG CÓ cordova.js"
+          echo "=== file cordova.js có tồn tại trong www? ==="
+          ls -la "$APP/www/cordova.js" 2>/dev/null || echo "(không có file cordova.js)"
+          echo "APP_PATH=$APP" >> $GITHUB_ENV
 
-      - name: Inject beacon vào www/index.html (chỉ để debug)
+      - name: Inject beacon vào .app bundle
         run: |
           python3 - << 'PYEOF'
-          path = 'www/index.html'
+          import os
+          path = os.environ['APP_PATH'] + '/www/index.html'
           html = open(path, encoding='utf-8').read()
-          # BEACON thay cho overlay: gửi trạng thái DOM về HTTP server trên runner qua
-          # new Image().src (không dính CORS, request luôn được gửi).
-          # Screenshot không đáng tin (overlay có thể không vẽ được), beacon thì đọc thẳng
-          # được trạng thái thật: stage, số lỗi, ion-app đã render chưa, bodyLen, url.
           inject = """<script>
           (function(){
             var lines=[];var stage='head';var n=0;
@@ -88,76 +112,32 @@ jobs:
               return 'stage='+stage+';err='+lines.length
                 +';ionApp='+(a?('Y:'+a.children.length):'N')
                 +';bodyLen='+(document.body?document.body.innerHTML.length:-1)
-                +';url='+location.href
-                +(lines.length?';E='+lines.slice(0,3).join(' || ').slice(0,700):'');
+                +';cordova='+(window.cordova?1:0)
+                +';sqlite='+(window.sqlitePlugin?1:0)
+                +';device='+(window.device?1:0)
+                +(lines.length?';E='+lines.slice(0,2).join(' || ').slice(0,500):'');
             }
             function beacon(){try{new Image().src='http://127.0.0.1:8765/r?n='+(n++)+'&d='+encodeURIComponent(diag());}catch(e){}}
             function add(t){lines.push(t);beacon();}
             window.addEventListener('error',function(e){
               var t=e.target;
               if(t&&t!==window&&(t.src||t.href)){add('RESFAIL '+(t.src||t.href));}
-              else{add('ERR '+(e.message||'')+' @ '+((e.error&&e.error.stack)||'').slice(0,300));}
+              else{add('ERR '+(e.message||'')+' @ '+((e.error&&e.error.stack)||'').slice(0,200));}
             },true);
-            window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('REJ '+((r&&(r.stack||r.message))||String(r)).slice(0,300));});
+            window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('REJ '+((r&&(r.stack||r.message))||String(r)).slice(0,200));});
             var ce=console.error;
-            console.error=function(){add('CONSOLE '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' ').slice(0,400));ce.apply(console,arguments);};
+            console.error=function(){add('CONSOLE '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' ').slice(0,300));ce.apply(console,arguments);};
             document.addEventListener('DOMContentLoaded',function(){stage='domready';beacon();});
             window.addEventListener('load',function(){stage='load';beacon();});
-            document.addEventListener('deviceready',function(){stage='deviceready';beacon();});
+            document.addEventListener('deviceready',function(){stage='DEVICEREADY';beacon();});
             beacon();
             setInterval(beacon,2000);
           })();
           </script>"""
-          OLD_UNUSED = """<script>
-          (function(){
-            // Banner VÀNG ở mép trên — KHÔNG che app (app vẽ phía dưới vẫn nhìn thấy).
-            // Không có banner = JS trong <head> chưa từng chạy => bundle/trang không load.
-            // TEST QUYẾT ĐỊNH: tô nền XANH LÁ ngay lúc parse <head>.
-            // Screenshot XANH LÁ  => JS có chạy VÀ webview hiển thị => app không render (bug thật của app).
-            // Screenshot TRẮNG    => webview KHÔNG hiển thị (bị che / chưa gắn vào view) => bug ở tầng native/Cordova.
-            try{document.documentElement.style.backgroundColor='#0f0';}catch(e){}
-            document.addEventListener('DOMContentLoaded',function(){try{document.body.style.backgroundColor='#0f0';}catch(e){}});
-            var lines=[];var box=null;var stage='head';
-            function ensure(){
-              if(box||!document.body)return;
-              box=document.createElement('pre');
-              box.style.cssText='position:fixed;z-index:2147483647;top:0;left:0;right:0;max-height:70%;overflow:auto;background:#ff0;color:#000;font:9px monospace;white-space:pre-wrap;padding:4px;margin:0;border-bottom:3px solid red';
-              document.body.appendChild(box);
-            }
-            function render(){
-              ensure(); if(!box)return;
-              var ionApp=document.querySelector('ion-app');
-              box.textContent='STAGE:'+stage+' | errors:'+lines.length
-                +' | ion-app:'+(ionApp?('YES children='+ionApp.children.length):'NO')
-                +' | bodyLen:'+(document.body?document.body.innerHTML.length:-1)
-                +(lines.length?'\\n\\n'+lines.join('\\n\\n'):'');
-            }
-            function add(t){lines.push(t);try{render();}catch(e){}}
-            window.addEventListener('error',function(e){
-              var t=e.target;
-              if(t&&t!==window&&(t.src||t.href)){add('[resource-fail] '+(t.src||t.href));}
-              else{add('[error] '+(e.message||'')+'\\n'+((e.error&&e.error.stack)||''));}
-            },true);
-            window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('[rejection] '+((r&&(r.stack||r.message))||String(r)));});
-            var ce=console.error;
-            console.error=function(){add('[console.error] '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' '));ce.apply(console,arguments);};
-            document.addEventListener('DOMContentLoaded',function(){stage='domready';render();});
-            window.addEventListener('load',function(){stage='load';render();});
-            document.addEventListener('deviceready',function(){stage='deviceready';render();});
-            setInterval(render,1000);
-          })();
-          </script>"""
           html = html.replace('<head>', '<head>' + inject, 1)
           open(path, 'w', encoding='utf-8').write(html)
-          print('overlay injected')
+          print('beacon injected into', path)
           PYEOF
-
-      - name: Add iOS platform
-        run: ionic cordova platform add ios
-
-      - name: Build for simulator (không cần ký)
-        run: |
-          cordova build ios --emulator -- --buildFlag='CODE_SIGNING_ALLOWED=NO' --buildFlag='CODE_SIGNING_REQUIRED=NO'
 
       - name: Boot simulator
         id: sim
@@ -170,66 +150,46 @@ jobs:
                   if d.get('isAvailable') and 'iPhone' in d['name']:
                       print(d['udid']); raise SystemExit
           ")
-          echo "Booting $UDID"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b || true
-
-          # BẮT BUỘC trên CI: mở Simulator.app để có window/Metal context.
-          # Chạy simulator "trần" (chỉ simctl boot) thì WebKit GPU process crash liên tục
-          # -> WebContent bị kill -> WKWebView trắng. Đó là lỗi của môi trường CI, không
-          # phải lỗi app, và sẽ tạo kết luận sai (xem run 29483373256).
+          # BẮT BUỘC: có window/Metal context, nếu không WebKit GPU process crash -> trắng giả
           open -a Simulator --args -CurrentDeviceUDID "$UDID" || true
           sleep 25
-
           echo "udid=$UDID" >> $GITHUB_OUTPUT
 
-      - name: Install & launch app
+      - name: Install & launch
         run: |
           UDID='${{ steps.sim.outputs.udid }}'
-          APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
-          echo "APP = $APP"
+          xcrun simctl install "$UDID" "$APP_PATH"
 
-          echo "=== www trong .app bundle (phải có index.html + main.*.js) ==="
-          ls -la "$APP/www" 2>/dev/null | head -15 || echo "!! KHÔNG CÓ THƯ MỤC www TRONG .app"
-          echo "--- main bundle js ---"
-          ls "$APP/www"/main*.js 2>/dev/null || echo "!! KHÔNG CÓ main.js"
-          echo "--- overlay đã vào index.html chưa? ---"
-          grep -c "STAGE:" "$APP/www/index.html" 2>/dev/null || echo "!! overlay KHÔNG có trong index.html của bundle"
-          echo "--- start page trong config.xml ---"
-          grep -i "content src" config.xml || true
-
-          xcrun simctl install "$UDID" "$APP"
-
-          # Server nhận beacon từ webview. Simulator dùng chung network stack với Mac
-          # nên 127.0.0.1 trong sim = 127.0.0.1 của runner. http.server ghi mỗi GET ra stderr.
           python3 -m http.server 8765 --bind 127.0.0.1 > /dev/null 2> /tmp/beacon.log &
-          BEACONPID=$!
+          echo $! > /tmp/beaconpid
           sleep 2
 
-          # stream log của app ra file (bắt cả NSLog/WebKit)
           xcrun simctl spawn "$UDID" log stream --level debug \
             --predicate 'processImagePath CONTAINS "App" OR senderImagePath CONTAINS "WebKit"' \
             > /tmp/simlog.txt 2>&1 &
-          LOGPID=$!
+          echo $! > /tmp/logpid
 
           xcrun simctl launch "$UDID" '${{ env.BUNDLE_ID }}' || true
-          sleep 20
-          xcrun simctl io "$UDID" screenshot /tmp/screen.png || true
-          sleep 25
-          xcrun simctl io "$UDID" screenshot /tmp/screen2.png || true
           sleep 30
-          xcrun simctl io "$UDID" screenshot /tmp/screen3.png || true
-          kill $LOGPID 2>/dev/null || true
-          kill $BEACONPID 2>/dev/null || true
+          xcrun simctl io "$UDID" screenshot /tmp/screen.png || true
+          sleep 30
+          xcrun simctl io "$UDID" screenshot /tmp/screen2.png || true
+          kill $(cat /tmp/logpid) 2>/dev/null || true
+          kill $(cat /tmp/beaconpid) 2>/dev/null || true
 
       - name: BEACON — trạng thái thật của webview
         if: always()
         run: |
+          if grep -q "gpuProcessDidExit\|GPU Process has crashed" /tmp/simlog.txt 2>/dev/null; then
+            echo "!! GPU process crash -> màn trắng do CI, không kết luận về app."
+          else
+            echo "OK: GPU không crash."
+          fi
           echo "=================== BEACON ==================="
           if [ ! -s /tmp/beacon.log ]; then
-            echo "!! KHÔNG NHẬN ĐƯỢC BEACON NÀO."
-            echo "   => JS trong <head> không chạy, HOẶC ATS/network chặn."
-            echo "   => Chưa kết luận được về app."
+            echo "!! KHÔNG NHẬN ĐƯỢC BEACON NÀO -> JS không chạy hoặc network bị chặn."
           else
             python3 - << 'PYEOF'
           import re, urllib.parse
@@ -241,36 +201,25 @@ jobs:
               if d not in [s for _, s in seen]:
                   seen.append((m.group(1), d))
           print('tổng số beacon khác nhau:', len(seen))
-          for n, d in seen[:25]:
+          for n, d in seen[:20]:
               print(f'  [{n}] {d}')
+          print()
+          last = seen[-1][1] if seen else ''
+          print('=== KẾT LUẬN ===')
+          print('deviceready bắn?  ', 'CÓ' if any('DEVICEREADY' in d for _, d in seen) else 'KHÔNG')
+          print('cordova có mặt?   ', 'CÓ' if ';cordova=1' in last else 'KHÔNG')
+          print('ion-app render?   ', 'CÓ' if ';ionApp=Y' in last else 'KHÔNG')
           PYEOF
           fi
 
-      - name: Show captured errors
-        if: always()
-        run: |
-          echo "=========== KIỂM TRA MÔI TRƯỜNG CI TRƯỚC ==========="
-          # Nếu GPU process crash thì WKWebView trắng vì lỗi CI, KHÔNG phải lỗi app.
-          # Phải phát hiện trước, nếu không sẽ kết luận sai.
-          if grep -q "gpuProcessDidExit\|GPU Process has crashed" /tmp/simlog.txt 2>/dev/null; then
-            echo "!! CẢNH BÁO: WebKit GPU process crash -> màn trắng là do CI, KHÔNG kết luận về app."
-            grep -c "gpuProcessDidExit\|didBecomeUnresponsive" /tmp/simlog.txt || true
-          else
-            echo "OK: không thấy GPU process crash -> screenshot phản ánh đúng app."
-          fi
-          echo "=================== JS / APP LOG ==================="
-          grep -iE "error|exception|typeerror|undefined|reject|fail" /tmp/simlog.txt 2>/dev/null | head -40 || echo "(no matches)"
-          echo "=================== TAIL ==================="
-          tail -30 /tmp/simlog.txt 2>/dev/null || echo "(no log)"
-
-      - name: Upload screenshots + log
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sim-debug
+          name: sim-debug-${{ inputs.build_mode }}
           path: |
             /tmp/screen.png
             /tmp/screen2.png
-            /tmp/screen3.png
             /tmp/simlog.txt
+            /tmp/beacon.log
           retention-days: 3
