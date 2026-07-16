@@ -69,6 +69,11 @@ jobs:
           (function(){
             // Banner VÀNG ở mép trên — KHÔNG che app (app vẽ phía dưới vẫn nhìn thấy).
             // Không có banner = JS trong <head> chưa từng chạy => bundle/trang không load.
+            // TEST QUYẾT ĐỊNH: tô nền XANH LÁ ngay lúc parse <head>.
+            // Screenshot XANH LÁ  => JS có chạy VÀ webview hiển thị => app không render (bug thật của app).
+            // Screenshot TRẮNG    => webview KHÔNG hiển thị (bị che / chưa gắn vào view) => bug ở tầng native/Cordova.
+            try{document.documentElement.style.backgroundColor='#0f0';}catch(e){}
+            document.addEventListener('DOMContentLoaded',function(){try{document.body.style.backgroundColor='#0f0';}catch(e){}});
             var lines=[];var box=null;var stage='head';
             function ensure(){
               if(box||!document.body)return;
