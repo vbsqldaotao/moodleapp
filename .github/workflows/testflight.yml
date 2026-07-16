@@ -150,18 +150,6 @@ jobs:
       - name: Cordova prepare iOS
         run: cordova prepare ios
 
-      - name: Set iOS build number
-        run: |
-          # Fallback: set trực tiếp vào App-Info.plist sau prepare
-          PLIST=$(find platforms/ios/App -name "App-Info.plist" | head -1)
-          if [ -z "$PLIST" ]; then
-            PLIST=$(find platforms/ios/App -maxdepth 2 -name "*.plist" \
-              | grep -v "GoogleService\|Entitlement\|Privacy" | head -1)
-          fi
-          echo "Updating: $PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" "$PLIST"
-          echo "CFBundleVersion = $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
-
       - name: Build iOS release
         run: |
           # cordova compile = chỉ archive + export IPA (không chạy prepare lại)
