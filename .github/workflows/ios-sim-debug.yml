@@ -1,0 +1,150 @@
+name: iOS Simulator Debug (VBS-499)
+
+# Workflow debug: build app rồi CHẠY THẬT trên iOS Simulator ngay trên runner,
+# vẽ mọi JS error lên màn hình và chụp screenshot → nhìn thấy nguyên nhân màn hình trắng.
+# KHÔNG ký, KHÔNG upload TestFlight. Chỉ chạy thủ công. Xoá sau khi fix xong VBS-499.
+
+on:
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '24'
+  BUNDLE_ID: 'vn.vbs.moodleapp'
+
+jobs:
+  debug-sim:
+    name: Run app on iOS Simulator
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: 'latest-stable'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install CLI tools
+        run: npm install -g @ionic/cli cordova
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write moodle.config.prod.json
+        run: |
+          printf '{"sites":[{"url":"%s","name":"VBS LMS"}],"default_lang":"vi"}' \
+            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.prod.json
+          cat moodle.config.prod.json
+
+      - name: Update Bundle ID in config.xml
+        run: |
+          sed -i '' 's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' config.xml
+
+      - name: Build production web
+        run: npm run build:prod
+
+      - name: Verify env.json (config phải đủ key)
+        run: |
+          node -e "
+          const c = require('./src/assets/env.json').config;
+          console.log('config key count:', Object.keys(c).length);
+          console.log('sites        :', JSON.stringify(c.sites));
+          console.log('default_lang :', JSON.stringify(c.default_lang));
+          console.log('languages ok :', c.languages && c.languages.vi !== undefined);
+          if (Object.keys(c).length < 30) { console.error('CONFIG BỊ THIẾU KEY!'); process.exit(1); }
+          "
+
+      - name: Inject error overlay vào www/index.html (chỉ để debug)
+        run: |
+          python3 - << 'PYEOF'
+          path = 'www/index.html'
+          html = open(path, encoding='utf-8').read()
+          inject = """<script>
+          (function(){
+            var lines=[];var box=null;
+            function paint(){
+              if(!box){box=document.createElement('pre');box.style.cssText='position:fixed;z-index:2147483647;inset:0;overflow:auto;background:#fff;color:#c00;font:10px monospace;white-space:pre-wrap;padding:6px;margin:0';}
+              box.textContent=lines.join('\\n\\n');
+              if(!box.parentNode&&document.body){document.body.appendChild(box);}
+            }
+            function add(t){lines.push(t);try{paint();}catch(e){}}
+            window.addEventListener('error',function(e){add('[error] '+(e.message||'')+'\\n'+((e.error&&e.error.stack)||''));},true);
+            window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('[rejection] '+((r&&(r.stack||r.message))||String(r)));});
+            var ce=console.error;
+            console.error=function(){add('[console.error] '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' '));ce.apply(console,arguments);};
+            document.addEventListener('DOMContentLoaded',paint);
+            setInterval(paint,1000);
+          })();
+          </script>"""
+          html = html.replace('<head>', '<head>' + inject, 1)
+          open(path, 'w', encoding='utf-8').write(html)
+          print('overlay injected')
+          PYEOF
+
+      - name: Add iOS platform
+        run: ionic cordova platform add ios
+
+      - name: Build for simulator (không cần ký)
+        run: |
+          cordova build ios --emulator -- --buildFlag='CODE_SIGNING_ALLOWED=NO' --buildFlag='CODE_SIGNING_REQUIRED=NO'
+
+      - name: Boot simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          for rt, devs in json.load(sys.stdin)['devices'].items():
+              if 'iOS' not in rt: continue
+              for d in devs:
+                  if d.get('isAvailable') and 'iPhone' in d['name']:
+                      print(d['udid']); raise SystemExit
+          ")
+          echo "Booting $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+          echo "udid=$UDID" >> $GITHUB_OUTPUT
+
+      - name: Install & launch app
+        run: |
+          UDID='${{ steps.sim.outputs.udid }}'
+          APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
+          echo "APP = $APP"
+          xcrun simctl install "$UDID" "$APP"
+
+          # stream log của app ra file (bắt cả NSLog/WebKit)
+          xcrun simctl spawn "$UDID" log stream --level debug \
+            --predicate 'processImagePath CONTAINS "App" OR senderImagePath CONTAINS "WebKit"' \
+            > /tmp/simlog.txt 2>&1 &
+          LOGPID=$!
+
+          xcrun simctl launch "$UDID" '${{ env.BUNDLE_ID }}' || true
+          sleep 25
+          xcrun simctl io "$UDID" screenshot /tmp/screen.png || true
+          sleep 5
+          xcrun simctl io "$UDID" screenshot /tmp/screen2.png || true
+          kill $LOGPID 2>/dev/null || true
+
+      - name: Show captured errors
+        if: always()
+        run: |
+          echo "=================== JS / APP LOG ==================="
+          grep -iE "error|exception|typeerror|undefined|reject|fail" /tmp/simlog.txt 2>/dev/null | head -60 || echo "(no matches)"
+          echo "=================== TAIL ==================="
+          tail -40 /tmp/simlog.txt 2>/dev/null || echo "(no log)"
+
+      - name: Upload screenshots + log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-debug
+          path: |
+            /tmp/screen.png
+            /tmp/screen2.png
+            /tmp/simlog.txt
+          retention-days: 3
