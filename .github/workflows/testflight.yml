@@ -129,11 +129,8 @@ jobs:
           echo "Profile Name: $PROFILE_NAME"
           echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
 
-      - name: Build production web
-        run: npm run build:prod
-
       - name: Add iOS platform
-        run: ionic cordova platform add ios
+        run: ionic cordova platform add ios --no-interactive
 
       - name: Write build.json for signing
         run: |
@@ -153,13 +150,38 @@ jobs:
           echo "=== build.json written ==="
           cat build.json
 
-      - name: Cordova prepare iOS
-        run: cordova prepare ios
-
-      - name: Build iOS release
+      # PHẢI dùng "ionic cordova build", KHÔNG dùng "ionic build" + "cordova compile" (VBS-499).
+      # angular.json có 2 target:
+      #   build               = @angular-builders/custom-webpack:browser  -> KHÔNG inject cordova.js
+      #   ionic-cordova-build = @ionic/cordova-builders:cordova-build     -> CÓ inject cordova.js
+      # "npm run build:prod" (= ionic build --prod) dùng target "build", mà src/index.html
+      # không tự khai báo cordova.js -> app chạy như web thuần, deviceready KHÔNG BAO GIỜ bắn
+      # -> plugin không tồn tại -> initialize-databases treo -> Angular không bootstrap -> MÀN TRẮNG.
+      # Đã kiểm chứng trên iOS Simulator: plain -> deviceready KHÔNG, ion-app KHÔNG (trắng);
+      # ionic cordova build -> deviceready CÓ, ion-app CÓ (ra màn Log in).
+      - name: Build iOS release (ionic cordova build - có inject cordova.js)
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
-          # cordova compile = chỉ archive + export IPA (không chạy prepare lại)
-          cordova compile ios --release --device --buildConfig=build.json
+          ionic cordova build ios --prod --release --device --no-interactive -- --buildConfig=build.json
+
+      - name: Kiểm chứng cordova.js được NHÚNG VÀO index.html (chặn regression VBS-499)
+        run: |
+          APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
+          echo "APP = $APP"
+          # KHÔNG kiểm tra sự tồn tại của file www/cordova.js: cordova prepare luôn copy
+          # platform_www nên file đó CÓ ở cả bản hỏng lẫn bản đúng -> không phân biệt được.
+          # Thứ thật sự quyết định là index.html có <script src="cordova.<hash>.js"> hay không.
+          # (production dùng outputHashing: all nên tên bundle có hash.)
+          echo "--- script tags trong index.html ---"
+          grep -oE 'src="[^"]+\.js"' "$APP/www/index.html" || true
+          if ! grep -qE '<script[^>]+src="cordova[^"]*\.js"' "$APP/www/index.html"; then
+            echo "!! index.html KHÔNG nhúng cordova.js -> deviceready sẽ không bắn -> app trắng màn hình."
+            echo "!! Nguyên nhân thường gặp: dùng 'ionic build' thay vì 'ionic cordova build'."
+            exit 1
+          fi
+          echo "OK: index.html đã nhúng cordova.js."
 
       - name: Find IPA
         run: |
