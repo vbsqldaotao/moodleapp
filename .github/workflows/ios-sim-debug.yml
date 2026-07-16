@@ -46,6 +46,17 @@ jobs:
         run: |
           sed -i '' 's/id="com\.moodle\.moodlemobile"/id="${{ env.BUNDLE_ID }}"/' config.xml
 
+      - name: Cho phép cleartext HTTP (chỉ để beacon debug về runner)
+        run: |
+          python3 - << 'PYEOF'
+          p='config.xml'; s=open(p,encoding='utf-8').read()
+          ats='    <platform name="ios">\n        <edit-config file="*-Info.plist" mode="merge" target="NSAppTransportSecurity">\n            <dict><key>NSAllowsArbitraryLoads</key><true/></dict>\n        </edit-config>'
+          s=s.replace('    <platform name="ios">', ats, 1)
+          assert 'NSAllowsArbitraryLoads' in s, 'ATS chèn thất bại'
+          open(p,'w',encoding='utf-8').write(s)
+          print('ATS exception added (debug only)')
+          PYEOF
+
       - name: Build production web
         run: npm run build:prod
 
@@ -60,12 +71,44 @@ jobs:
           if (Object.keys(c).length < 30) { console.error('CONFIG BỊ THIẾU KEY!'); process.exit(1); }
           "
 
-      - name: Inject error overlay vào www/index.html (chỉ để debug)
+      - name: Inject beacon vào www/index.html (chỉ để debug)
         run: |
           python3 - << 'PYEOF'
           path = 'www/index.html'
           html = open(path, encoding='utf-8').read()
+          # BEACON thay cho overlay: gửi trạng thái DOM về HTTP server trên runner qua
+          # new Image().src (không dính CORS, request luôn được gửi).
+          # Screenshot không đáng tin (overlay có thể không vẽ được), beacon thì đọc thẳng
+          # được trạng thái thật: stage, số lỗi, ion-app đã render chưa, bodyLen, url.
           inject = """<script>
+          (function(){
+            var lines=[];var stage='head';var n=0;
+            function diag(){
+              var a=document.querySelector('ion-app');
+              return 'stage='+stage+';err='+lines.length
+                +';ionApp='+(a?('Y:'+a.children.length):'N')
+                +';bodyLen='+(document.body?document.body.innerHTML.length:-1)
+                +';url='+location.href
+                +(lines.length?';E='+lines.slice(0,3).join(' || ').slice(0,700):'');
+            }
+            function beacon(){try{new Image().src='http://127.0.0.1:8765/r?n='+(n++)+'&d='+encodeURIComponent(diag());}catch(e){}}
+            function add(t){lines.push(t);beacon();}
+            window.addEventListener('error',function(e){
+              var t=e.target;
+              if(t&&t!==window&&(t.src||t.href)){add('RESFAIL '+(t.src||t.href));}
+              else{add('ERR '+(e.message||'')+' @ '+((e.error&&e.error.stack)||'').slice(0,300));}
+            },true);
+            window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('REJ '+((r&&(r.stack||r.message))||String(r)).slice(0,300));});
+            var ce=console.error;
+            console.error=function(){add('CONSOLE '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' ').slice(0,400));ce.apply(console,arguments);};
+            document.addEventListener('DOMContentLoaded',function(){stage='domready';beacon();});
+            window.addEventListener('load',function(){stage='load';beacon();});
+            document.addEventListener('deviceready',function(){stage='deviceready';beacon();});
+            beacon();
+            setInterval(beacon,2000);
+          })();
+          </script>"""
+          OLD_UNUSED = """<script>
           (function(){
             // Banner VÀNG ở mép trên — KHÔNG che app (app vẽ phía dưới vẫn nhìn thấy).
             // Không có banner = JS trong <head> chưa từng chạy => bundle/trang không load.
@@ -157,6 +200,12 @@ jobs:
 
           xcrun simctl install "$UDID" "$APP"
 
+          # Server nhận beacon từ webview. Simulator dùng chung network stack với Mac
+          # nên 127.0.0.1 trong sim = 127.0.0.1 của runner. http.server ghi mỗi GET ra stderr.
+          python3 -m http.server 8765 --bind 127.0.0.1 > /dev/null 2> /tmp/beacon.log &
+          BEACONPID=$!
+          sleep 2
+
           # stream log của app ra file (bắt cả NSLog/WebKit)
           xcrun simctl spawn "$UDID" log stream --level debug \
             --predicate 'processImagePath CONTAINS "App" OR senderImagePath CONTAINS "WebKit"' \
@@ -171,6 +220,31 @@ jobs:
           sleep 30
           xcrun simctl io "$UDID" screenshot /tmp/screen3.png || true
           kill $LOGPID 2>/dev/null || true
+          kill $BEACONPID 2>/dev/null || true
+
+      - name: BEACON — trạng thái thật của webview
+        if: always()
+        run: |
+          echo "=================== BEACON ==================="
+          if [ ! -s /tmp/beacon.log ]; then
+            echo "!! KHÔNG NHẬN ĐƯỢC BEACON NÀO."
+            echo "   => JS trong <head> không chạy, HOẶC ATS/network chặn."
+            echo "   => Chưa kết luận được về app."
+          else
+            python3 - << 'PYEOF'
+          import re, urllib.parse
+          seen = []
+          for line in open('/tmp/beacon.log', encoding='utf-8', errors='replace'):
+              m = re.search(r'GET /r\?n=(\d+)&d=(\S+) HTTP', line)
+              if not m: continue
+              d = urllib.parse.unquote(m.group(2))
+              if d not in [s for _, s in seen]:
+                  seen.append((m.group(1), d))
+          print('tổng số beacon khác nhau:', len(seen))
+          for n, d in seen[:25]:
+              print(f'  [{n}] {d}')
+          PYEOF
+          fi
 
       - name: Show captured errors
         if: always()
