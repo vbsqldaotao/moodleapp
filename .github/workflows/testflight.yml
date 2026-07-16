@@ -28,11 +28,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Write moodle.config.json
+      - name: Write moodle.config.prod.json
         run: |
-          printf '{"defaultsites":[{"url":"%s","name":"VBS LMS"}],"forcedefault":false}' \
-            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.json
-          cat moodle.config.json
+          # Chỉ ghi các key cần override — KHÔNG ghi đè moodle.config.json gốc.
+          # gulp/task-build-env.js tự merge moodle.config.prod.json lên trên config gốc khi NODE_ENV=production.
+          # Ghi đè file gốc sẽ xoá toàn bộ 36 key bắt buộc (languages, zoomlevels, app_id...) → app trắng màn hình (VBS-499).
+          printf '{"sites":[{"url":"%s","name":"VBS LMS"}],"default_lang":"vi"}' \
+            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.prod.json
+          cat moodle.config.prod.json
 
       - name: Build production web
         run: npm run build:prod
@@ -70,11 +73,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Write moodle.config.json
+      - name: Write moodle.config.prod.json
         run: |
-          printf '{"defaultsites":[{"url":"%s","name":"VBS LMS"}],"forcedefault":false}' \
-            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.json
-          cat moodle.config.json
+          # Chỉ ghi các key cần override — KHÔNG ghi đè moodle.config.json gốc.
+          # gulp/task-build-env.js tự merge moodle.config.prod.json lên trên config gốc khi NODE_ENV=production.
+          # Ghi đè file gốc sẽ xoá toàn bộ 36 key bắt buộc (languages, zoomlevels, app_id...) → app trắng màn hình (VBS-499).
+          printf '{"sites":[{"url":"%s","name":"VBS LMS"}],"default_lang":"vi"}' \
+            '${{ secrets.MOODLE_SITE_URL }}' > moodle.config.prod.json
+          cat moodle.config.prod.json
 
       - name: Update Bundle ID in config.xml
         run: |
