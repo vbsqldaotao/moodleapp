@@ -125,6 +125,14 @@ jobs:
           echo "Booting $UDID"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b || true
+
+          # BẮT BUỘC trên CI: mở Simulator.app để có window/Metal context.
+          # Chạy simulator "trần" (chỉ simctl boot) thì WebKit GPU process crash liên tục
+          # -> WebContent bị kill -> WKWebView trắng. Đó là lỗi của môi trường CI, không
+          # phải lỗi app, và sẽ tạo kết luận sai (xem run 29483373256).
+          open -a Simulator --args -CurrentDeviceUDID "$UDID" || true
+          sleep 25
+
           echo "udid=$UDID" >> $GITHUB_OUTPUT
 
       - name: Install & launch app
@@ -162,10 +170,19 @@ jobs:
       - name: Show captured errors
         if: always()
         run: |
+          echo "=========== KIỂM TRA MÔI TRƯỜNG CI TRƯỚC ==========="
+          # Nếu GPU process crash thì WKWebView trắng vì lỗi CI, KHÔNG phải lỗi app.
+          # Phải phát hiện trước, nếu không sẽ kết luận sai.
+          if grep -q "gpuProcessDidExit\|GPU Process has crashed" /tmp/simlog.txt 2>/dev/null; then
+            echo "!! CẢNH BÁO: WebKit GPU process crash -> màn trắng là do CI, KHÔNG kết luận về app."
+            grep -c "gpuProcessDidExit\|didBecomeUnresponsive" /tmp/simlog.txt || true
+          else
+            echo "OK: không thấy GPU process crash -> screenshot phản ánh đúng app."
+          fi
           echo "=================== JS / APP LOG ==================="
-          grep -iE "error|exception|typeerror|undefined|reject|fail" /tmp/simlog.txt 2>/dev/null | head -60 || echo "(no matches)"
+          grep -iE "error|exception|typeerror|undefined|reject|fail" /tmp/simlog.txt 2>/dev/null | head -40 || echo "(no matches)"
           echo "=================== TAIL ==================="
-          tail -40 /tmp/simlog.txt 2>/dev/null || echo "(no log)"
+          tail -30 /tmp/simlog.txt 2>/dev/null || echo "(no log)"
 
       - name: Upload screenshots + log
         if: always()
