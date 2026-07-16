@@ -90,12 +90,21 @@ jobs:
           console.log('config key count:', Object.keys(c).length, '| sites:', JSON.stringify(c.sites));
           if (Object.keys(c).length < 30) { console.error('CONFIG THIẾU KEY!'); process.exit(1); }
           "
+          echo "=== script tags trong www/index.html (output của build) ==="
+          grep -oE 'src="[^"]+\.js"' www/index.html || true
+          echo ""
+          echo "=== CHẠY ĐÚNG GUARD của testflight.yml để kiểm chứng regex ==="
+          if grep -qE 'src="cordova[^"]*\.js"' www/index.html; then
+            echo "GUARD => PASS (index.html có nhúng bundle cordova)"
+          else
+            echo "GUARD => FAIL (index.html KHÔNG nhúng cordova)"
+          fi
+          echo ""
+          echo "=== bundle cordova Angular sinh ra trong www ==="
+          ls -la www/cordova*.js 2>/dev/null || echo "(không có)"
+
           APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
           echo "APP = $APP"
-          echo "=== cordova.js CÓ trong index.html của bundle? (0 = không -> deviceready không bắn) ==="
-          grep -c "cordova.js" "$APP/www/index.html" || echo "0 — KHÔNG CÓ cordova.js"
-          echo "=== file cordova.js có tồn tại trong www? ==="
-          ls -la "$APP/www/cordova.js" 2>/dev/null || echo "(không có file cordova.js)"
           echo "APP_PATH=$APP" >> $GITHUB_ENV
 
       - name: Inject beacon vào .app bundle

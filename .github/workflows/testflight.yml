@@ -168,20 +168,28 @@ jobs:
 
       - name: Kiểm chứng cordova.js được NHÚNG VÀO index.html (chặn regression VBS-499)
         run: |
-          APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
-          echo "APP = $APP"
-          # KHÔNG kiểm tra sự tồn tại của file www/cordova.js: cordova prepare luôn copy
-          # platform_www nên file đó CÓ ở cả bản hỏng lẫn bản đúng -> không phân biệt được.
-          # Thứ thật sự quyết định là index.html có <script src="cordova.<hash>.js"> hay không.
-          # (production dùng outputHashing: all nên tên bundle có hash.)
-          echo "--- script tags trong index.html ---"
-          grep -oE 'src="[^"]+\.js"' "$APP/www/index.html" || true
-          if ! grep -qE '<script[^>]+src="cordova[^"]*\.js"' "$APP/www/index.html"; then
-            echo "!! index.html KHÔNG nhúng cordova.js -> deviceready sẽ không bắn -> app trắng màn hình."
+          # Kiểm tra www/index.html — đây là output của ionic cordova build
+          # (prepareBrowserConfig ép outputPath = www), sau đó cordova prepare mới copy
+          # sang platform rồi vào .app. Không dò .app: build --release --device để .app
+          # trong DerivedData chứ KHÔNG nằm ở platforms/ios/build, dò kiểu đó sẽ fail oan
+          # (đúng lỗi đã làm hỏng build 41).
+          #
+          # Cũng KHÔNG kiểm tra sự tồn tại của file www/cordova.js: cordova luôn copy
+          # platform_www nên file đó CÓ ở cả bản hỏng lẫn bản đúng (69445 bytes, y hệt)
+          # -> không phân biệt được. Thứ thật sự quyết định là index.html CÓ tham chiếu
+          # bundle cordova hay không (production outputHashing: all -> cordova.<hash>.js).
+          if [ ! -f www/index.html ]; then
+            echo "!! Không tìm thấy www/index.html — build chưa chạy hoặc outputPath đã đổi."
+            exit 1
+          fi
+          echo "--- script tags trong www/index.html ---"
+          grep -oE 'src="[^"]+\.js"' www/index.html || true
+          if ! grep -qE 'src="cordova[^"]*\.js"' www/index.html; then
+            echo "!! www/index.html KHÔNG nhúng cordova.js -> deviceready sẽ không bắn -> app trắng màn hình."
             echo "!! Nguyên nhân thường gặp: dùng 'ionic build' thay vì 'ionic cordova build'."
             exit 1
           fi
-          echo "OK: index.html đã nhúng cordova.js."
+          echo "OK: www/index.html đã nhúng cordova.js."
 
       - name: Find IPA
         run: |
