@@ -67,19 +67,36 @@ jobs:
           html = open(path, encoding='utf-8').read()
           inject = """<script>
           (function(){
-            var lines=[];var box=null;
-            function paint(){
-              if(!box){box=document.createElement('pre');box.style.cssText='position:fixed;z-index:2147483647;inset:0;overflow:auto;background:#fff;color:#c00;font:10px monospace;white-space:pre-wrap;padding:6px;margin:0';}
-              box.textContent=lines.join('\\n\\n');
-              if(!box.parentNode&&document.body){document.body.appendChild(box);}
+            // Banner VÀNG ở mép trên — KHÔNG che app (app vẽ phía dưới vẫn nhìn thấy).
+            // Không có banner = JS trong <head> chưa từng chạy => bundle/trang không load.
+            var lines=[];var box=null;var stage='head';
+            function ensure(){
+              if(box||!document.body)return;
+              box=document.createElement('pre');
+              box.style.cssText='position:fixed;z-index:2147483647;top:0;left:0;right:0;max-height:70%;overflow:auto;background:#ff0;color:#000;font:9px monospace;white-space:pre-wrap;padding:4px;margin:0;border-bottom:3px solid red';
+              document.body.appendChild(box);
             }
-            function add(t){lines.push(t);try{paint();}catch(e){}}
-            window.addEventListener('error',function(e){add('[error] '+(e.message||'')+'\\n'+((e.error&&e.error.stack)||''));},true);
+            function render(){
+              ensure(); if(!box)return;
+              var ionApp=document.querySelector('ion-app');
+              box.textContent='STAGE:'+stage+' | errors:'+lines.length
+                +' | ion-app:'+(ionApp?('YES children='+ionApp.children.length):'NO')
+                +' | bodyLen:'+(document.body?document.body.innerHTML.length:-1)
+                +(lines.length?'\\n\\n'+lines.join('\\n\\n'):'');
+            }
+            function add(t){lines.push(t);try{render();}catch(e){}}
+            window.addEventListener('error',function(e){
+              var t=e.target;
+              if(t&&t!==window&&(t.src||t.href)){add('[resource-fail] '+(t.src||t.href));}
+              else{add('[error] '+(e.message||'')+'\\n'+((e.error&&e.error.stack)||''));}
+            },true);
             window.addEventListener('unhandledrejection',function(e){var r=e.reason;add('[rejection] '+((r&&(r.stack||r.message))||String(r)));});
             var ce=console.error;
             console.error=function(){add('[console.error] '+Array.prototype.map.call(arguments,function(a){return(a&&(a.stack||a.message))||String(a);}).join(' '));ce.apply(console,arguments);};
-            document.addEventListener('DOMContentLoaded',paint);
-            setInterval(paint,1000);
+            document.addEventListener('DOMContentLoaded',function(){stage='domready';render();});
+            window.addEventListener('load',function(){stage='load';render();});
+            document.addEventListener('deviceready',function(){stage='deviceready';render();});
+            setInterval(render,1000);
           })();
           </script>"""
           html = html.replace('<head>', '<head>' + inject, 1)
@@ -115,6 +132,16 @@ jobs:
           UDID='${{ steps.sim.outputs.udid }}'
           APP=$(find platforms/ios/build -name "*.app" -type d | head -1)
           echo "APP = $APP"
+
+          echo "=== www trong .app bundle (phải có index.html + main.*.js) ==="
+          ls -la "$APP/www" 2>/dev/null | head -15 || echo "!! KHÔNG CÓ THƯ MỤC www TRONG .app"
+          echo "--- main bundle js ---"
+          ls "$APP/www"/main*.js 2>/dev/null || echo "!! KHÔNG CÓ main.js"
+          echo "--- overlay đã vào index.html chưa? ---"
+          grep -c "STAGE:" "$APP/www/index.html" 2>/dev/null || echo "!! overlay KHÔNG có trong index.html của bundle"
+          echo "--- start page trong config.xml ---"
+          grep -i "content src" config.xml || true
+
           xcrun simctl install "$UDID" "$APP"
 
           # stream log của app ra file (bắt cả NSLog/WebKit)
@@ -124,10 +151,12 @@ jobs:
           LOGPID=$!
 
           xcrun simctl launch "$UDID" '${{ env.BUNDLE_ID }}' || true
-          sleep 25
+          sleep 20
           xcrun simctl io "$UDID" screenshot /tmp/screen.png || true
-          sleep 5
+          sleep 25
           xcrun simctl io "$UDID" screenshot /tmp/screen2.png || true
+          sleep 30
+          xcrun simctl io "$UDID" screenshot /tmp/screen3.png || true
           kill $LOGPID 2>/dev/null || true
 
       - name: Show captured errors
@@ -146,5 +175,6 @@ jobs:
           path: |
             /tmp/screen.png
             /tmp/screen2.png
+            /tmp/screen3.png
             /tmp/simlog.txt
           retention-days: 3
